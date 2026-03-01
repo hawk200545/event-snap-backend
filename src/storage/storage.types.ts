@@ -15,4 +15,5 @@ export type GenerateUploadUrlOutput = {
 export interface StorageService {
   generateUploadUrl(input: GenerateUploadUrlInput): Promise<GenerateUploadUrlOutput>;
   assertObjectExists(bucket: string, key: string): Promise<void>;
+  generateReadUrl(key: string, expiresInSeconds?: number): Promise<string>;
 }

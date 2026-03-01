@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { toDataURL } from 'qrcode';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../common/prisma/prisma.service';
@@ -98,6 +98,24 @@ export class RoomsService {
         faceRecognitionEnabled: room.faceRecognitionEnabled,
       },
     };
+  }
+
+  async delete(roomId: string, organizerId: string) {
+    const room = await this.prisma.room.findUnique({
+      where: { id: roomId },
+      select: { id: true, organizerId: true, status: true },
+    });
+
+    if (!room) throw new NotFoundException('Room not found');
+    if (room.organizerId !== organizerId) throw new ForbiddenException('Not your room');
+    if (room.status === 'DELETED') throw new NotFoundException('Room not found');
+
+    await this.prisma.room.update({
+      where: { id: roomId },
+      data: { status: 'DELETED' },
+    });
+
+    return { success: true };
   }
 
   async ensureUploadAllowed(roomId: string) {

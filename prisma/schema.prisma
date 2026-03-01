@@ -131,12 +131,13 @@ model Photo {
 }
 
 model FaceEmbedding {
-  id        String   @id @default(uuid())
-  photoId   String
-  roomId    String
-  faceIndex Int      @default(0)  // which face in the photo (0-indexed)
-  embedding Float[]              // 512-dim FaceNet vector
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  photoId      String
+  roomId       String
+  faceIndex    Int      @default(0)
+  embedding    Float[]
+  faceThumbKey String?
+  createdAt    DateTime @default(now())
 
   photo Photo @relation(fields: [photoId], references: [id], onDelete: Cascade)
 

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { JoinRoomDto } from './dto/join-room.dto';
@@ -24,6 +24,12 @@ export class RoomsController {
   @Get(':roomId')
   getById(@Param('roomId') roomId: string) {
     return this.roomsService.getById(roomId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete(':roomId')
+  delete(@Req() req: { user: { sub: string } }, @Param('roomId') roomId: string) {
+    return this.roomsService.delete(roomId, req.user.sub);
   }
 
   // Public — no auth required for guests

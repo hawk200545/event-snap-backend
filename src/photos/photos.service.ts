@@ -124,6 +124,14 @@ export class PhotosService {
       },
     });
 
-    return photos.map((p) => ({ ...p, sizeBytes: Number(p.sizeBytes) }));
+    return Promise.all(
+      photos.map(async (p) => ({
+        ...p,
+        sizeBytes: Number(p.sizeBytes),
+        thumbnailUrl: p.thumbnailKey
+          ? await this.storageService.generateReadUrl(p.thumbnailKey)
+          : null,
+      })),
+    );
   }
 }

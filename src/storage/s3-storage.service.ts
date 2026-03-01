@@ -1,4 +1,4 @@
-import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -59,5 +59,10 @@ export class S3StorageService implements StorageService {
     } catch {
       throw new InternalServerErrorException('Uploaded file not found in storage');
     }
+  }
+
+  async generateReadUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+    const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
+    return getSignedUrl(this.client, command, { expiresIn: expiresInSeconds });
   }
 }
