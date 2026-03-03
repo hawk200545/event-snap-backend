@@ -9,7 +9,18 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/prisma/prisma.service';
 import type { StorageService } from '../storage/storage.types';
 
-const SIMILARITY_THRESHOLD = 0.6;
+// How similar two faces must be to count as the same person in search results
+const SEARCH_DISTANCE_THRESHOLD = 0.40;   // cosine distance ≤ 0.40 → similarity ≥ 0.60
+// How similar two faces must be to collapse them into one in the faces list
+const DEDUP_DISTANCE_THRESHOLD = 0.50;    // looser — same person at different angles/lighting
+
+type PhotoRow = {
+  id: string;
+  storageKey: string;
+  thumbnailKey: string | null;
+  contentType: string;
+  uploadedAt: Date;
+};
 
 @Injectable()
 export class FacesService {
@@ -26,22 +37,31 @@ export class FacesService {
   async listFaces(roomId: string) {
     await this.assertRoomExists(roomId);
 
-    const faces = await this.prisma.faceEmbedding.findMany({
-      where: { roomId, faceThumbKey: { not: null } },
-      select: {
-        id: true,
-        photoId: true,
-        faceIndex: true,
-        faceThumbKey: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+    // Return one representative face per unique person.
+    // A face is kept only if no earlier face (smaller id) in the same room
+    // is within the cosine distance threshold — i.e. it's a new unique person.
+    type FaceRow = { id: string; photoId: string; faceIndex: number; faceThumbKey: string; createdAt: Date };
+    const faces = await this.prisma.$queryRawUnsafe<FaceRow[]>(
+      `SELECT fe.id, fe."photoId", fe."faceIndex", fe."faceThumbKey", fe."createdAt"
+       FROM "FaceEmbedding" fe
+       WHERE fe."roomId" = $1
+         AND fe."faceThumbKey" IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM "FaceEmbedding" fe2
+           WHERE fe2."roomId" = $1
+             AND fe2."faceThumbKey" IS NOT NULL
+             AND fe2.id < fe.id
+             AND (fe2.embedding <=> fe.embedding) <= $2
+         )
+       ORDER BY fe."createdAt" ASC`,
+      roomId,
+      DEDUP_DISTANCE_THRESHOLD,
+    );
 
     return Promise.all(
       faces.map(async (f) => ({
         ...f,
-        faceThumbUrl: await this.storageService.generateReadUrl(f.faceThumbKey!),
+        faceThumbUrl: await this.storageService.generateReadUrl(f.faceThumbKey),
       })),
     );
   }
@@ -49,13 +69,16 @@ export class FacesService {
   async getPhotosByFace(roomId: string, faceId: string) {
     await this.assertRoomExists(roomId);
 
-    const target = await this.prisma.faceEmbedding.findFirst({
-      where: { id: faceId, roomId },
-    });
+    // Fetch the target face's embedding via raw SQL (Unsupported field)
+    const rows = await this.prisma.$queryRawUnsafe<{ embedding: string }[]>(
+      `SELECT embedding::text AS embedding FROM "FaceEmbedding" WHERE id = $1 AND "roomId" = $2`,
+      faceId,
+      roomId,
+    );
 
-    if (!target) throw new NotFoundException('Face not found');
+    if (!rows.length) throw new NotFoundException('Face not found');
 
-    return this.searchByEmbedding(roomId, target.embedding, faceId);
+    return this.searchByVector(roomId, rows[0].embedding);
   }
 
   async selfieMatch(roomId: string, file: Express.Multer.File) {
@@ -69,7 +92,6 @@ export class FacesService {
       throw new BadRequestException('Unsupported file type');
     }
 
-    // Send selfie to Python service for embedding extraction
     const form = new FormData();
     form.append('image', new Blob([file.buffer.buffer as ArrayBuffer], { type: file.mimetype }), file.originalname);
 
@@ -92,40 +114,26 @@ export class FacesService {
       throw new ServiceUnavailableException('AI service unreachable');
     }
 
-    return this.searchByEmbedding(roomId, embedding);
+    // Convert number[] → pgvector literal "[x,x,x,...]"
+    const vec = `[${embedding.join(',')}]`;
+    return this.searchByVector(roomId, vec);
   }
 
-  private async searchByEmbedding(roomId: string, embedding: number[], excludeFaceId?: string) {
-    const allEmbeddings = await this.prisma.faceEmbedding.findMany({
-      where: {
-        roomId,
-        ...(excludeFaceId ? { id: { not: excludeFaceId } } : {}),
-      },
-      select: { photoId: true, embedding: true },
-    });
+  // ── pgvector cosine search ────────────────────────────────────────────────
 
-    const matchedPhotoIds = new Set<string>();
-
-    for (const e of allEmbeddings) {
-      const sim = this.cosineSimilarity(embedding, e.embedding);
-      if (sim >= SIMILARITY_THRESHOLD) {
-        matchedPhotoIds.add(e.photoId);
-      }
-    }
-
-    if (matchedPhotoIds.size === 0) return [];
-
-    const photos = await this.prisma.photo.findMany({
-      where: { id: { in: [...matchedPhotoIds] }, status: 'READY' },
-      select: {
-        id: true,
-        storageKey: true,
-        thumbnailKey: true,
-        contentType: true,
-        uploadedAt: true,
-      },
-      orderBy: { uploadedAt: 'desc' },
-    });
+  private async searchByVector(roomId: string, vec: string) {
+    const photos = await this.prisma.$queryRawUnsafe<PhotoRow[]>(
+      `SELECT DISTINCT p.id, p."storageKey", p."thumbnailKey", p."contentType", p."uploadedAt"
+       FROM "FaceEmbedding" fe
+       JOIN "Photo" p ON p.id = fe."photoId"
+       WHERE fe."roomId" = $1
+         AND p.status = 'READY'
+         AND (fe.embedding <=> $2::vector) <= $3
+       ORDER BY p."uploadedAt" DESC`,
+      roomId,
+      vec,
+      SEARCH_DISTANCE_THRESHOLD,
+    );
 
     return Promise.all(
       photos.map(async (p) => ({
@@ -143,16 +151,5 @@ export class FacesService {
       select: { id: true },
     });
     if (!room) throw new NotFoundException('Room not found');
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    let dot = 0, normA = 0, normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
   }
 }

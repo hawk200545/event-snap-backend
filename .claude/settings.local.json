@@ -3,7 +3,12 @@
     "allow": [
       "Bash(bun add:*)",
       "Bash(bunx prisma:*)",
-      "Bash(bun run:*)"
+      "Bash(bun run:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(pip show:*)",
+      "Bash(prisma generate:*)",
+      "Bash(AWS_ACCESS_KEY_ID=\"AKIAQ7HSFBF254YEM7OS\" AWS_SECRET_ACCESS_KEY=\"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\" AWS_DEFAULT_REGION=\"ap-south-1\" aws sts:*)"
     ]
   }
 }
